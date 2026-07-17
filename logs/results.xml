@@ -1,0 +1,6 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1784289105" />
+    <testcase name="run_test" classname="tb.tests.axi_test" file="/home/aditipk/Hybrid_AXI_Project/hybrid_axi/tb/tests/axi_test.py" lineno="55" time="0.029560565948486328" sim_time_ns="840.0" ratio_time="28416.23538141403" />
+  </testsuite>
+</testsuites>
