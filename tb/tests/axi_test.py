@@ -32,19 +32,19 @@ class AXITest(uvm_test):
         # seq = AXISequence(
         #     "seq",
         #     num_tests=18,
-        #     use_ml=False,
+        #     use_hybrid=False,
         # )
 
         # =====================================================
-        # ML MODE
+        # HYBRID MODE
         #
         # Offline Random Forest + KMeans clustered testcases.
         # =====================================================
 
         seq = AXISequence(
             "seq",
-            num_tests=18,
-            use_ml=True,
+            total_budget=18,
+            use_hybrid=True,
         )
 
         await seq.start(self.env.agent.seqr)
