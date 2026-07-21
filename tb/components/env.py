@@ -15,12 +15,7 @@ from tb.components.scoreboard import AXIScoreboard
 
 def classify_addr(addr):
     """
-    Address category classification, per the locked 18-bin model.
-
-    The same categories apply to both WRITE and READ addresses --
-    REG0-REG3 map 1:1 onto the 4-entry regfile; everything else is
-    INVALID (verified against the RTL: every address 4-255 is
-    treated identically, no secondary decode).
+    Address category classification.
     """
 
     if 0 <= addr < 4:
@@ -32,10 +27,6 @@ def classify_addr(addr):
 def classify_data(wdata):
     """
     UNSIGNED data classification.
-
-    WDATA has no signed interpretation anywhere in this RTL
-    (unlike the ALU's operand classification), so this must NOT
-    use a to_signed()-style conversion.
     """
 
     if wdata == 0:
@@ -47,37 +38,16 @@ def classify_data(wdata):
 
 
 # =========================================================
-# Coverage bin classification -- SINGLE SOURCE OF TRUTH
+# Coverage bin classification
 # =========================================================
 
 def get_bin(item):
-    """
-    Coverage bin classification for the locked 18-bin model.
-
-    WRITE:
-        REG0-REG3 x {ZERO, SMALL, LARGE}
-        = 12 bins
-
-        INVALID WRITE
-        = 1 bin
-
-    READ:
-        REG0
-        REG1
-        REG2
-        REG3
-        INVALID
-        = 5 bins
-
-    Total = 18 bins
-    """
 
     addr_cat = classify_addr(item.addr)
 
     if item.txn_type == "READ":
         return ("READ", addr_cat)
 
-    # WRITE
     if addr_cat == "INVALID":
         return ("WRITE", "INVALID", "NA")
 
@@ -90,8 +60,17 @@ def get_bin(item):
     )
 
 
-TOTAL_BINS = 18
+# =========================================================
+# Coverage state
+# =========================================================
+
+TOTAL_BINS = 26
+
 covered_bins = set()
+
+# Stores previous transaction for sequence-based coverage
+last_txn = None
+
 
 # =========================================================
 # Hybrid coverage helper APIs
@@ -99,36 +78,53 @@ covered_bins = set()
 
 def get_covered_bins():
     """
-    Return all currently covered functional coverage bins.
+    Return all covered bins.
     """
     return set(covered_bins)
 
 
 def get_uncovered_bins():
     """
-    Return all uncovered functional coverage bins.
+    Return all uncovered bins.
     """
+
     all_bins = set()
 
+    # -------------------------
     # WRITE bins
+    # -------------------------
     for reg in ["REG0", "REG1", "REG2", "REG3"]:
         for dtype in ["ZERO", "SMALL", "LARGE"]:
             all_bins.add(("WRITE", reg, dtype))
 
     all_bins.add(("WRITE", "INVALID", "NA"))
 
+    # -------------------------
     # READ bins
+    # -------------------------
     for reg in ["REG0", "REG1", "REG2", "REG3"]:
         all_bins.add(("READ", reg))
 
     all_bins.add(("READ", "INVALID"))
+
+    # -------------------------
+    # RAW bins
+    # -------------------------
+    for reg in ["REG0", "REG1", "REG2", "REG3"]:
+        all_bins.add(("RAW", reg))
+
+    # -------------------------
+    # DOUBLE WRITE bins
+    # -------------------------
+    for reg in ["REG0", "REG1", "REG2", "REG3"]:
+        all_bins.add(("DOUBLE_WRITE", reg))
 
     return all_bins - covered_bins
 
 
 def coverage_complete():
     """
-    Returns True if all functional coverage bins are covered.
+    Returns True if all coverage bins are covered.
     """
     return len(covered_bins) >= TOTAL_BINS
 
@@ -143,7 +139,6 @@ class CoverageExport(uvm_analysis_export):
 
     def start_of_simulation_phase(self):
         os.makedirs("results", exist_ok=True)
-        
 
         self.log_file = open(
             "results/coverage_log.csv",
@@ -167,13 +162,48 @@ class CoverageExport(uvm_analysis_export):
         ])
 
     def write(self, item):
-       
+
+        global last_txn
 
         bin_key = get_bin(item)
 
         old_cov = len(covered_bins)
 
+        # Original coverage
         covered_bins.add(bin_key)
+
+        # -----------------------------
+        # RAW coverage
+        # -----------------------------
+        if (
+            last_txn is not None
+            and last_txn.txn_type == "WRITE"
+            and item.txn_type == "READ"
+        ):
+
+            prev_reg = classify_addr(last_txn.addr)
+            curr_reg = classify_addr(item.addr)
+
+            if prev_reg == curr_reg and prev_reg != "INVALID":
+                covered_bins.add(("RAW", curr_reg))
+
+        # -----------------------------
+        # DOUBLE WRITE coverage
+        # -----------------------------
+        if (
+            last_txn is not None
+            and last_txn.txn_type == "WRITE"
+            and item.txn_type == "WRITE"
+        ):
+
+            prev_reg = classify_addr(last_txn.addr)
+            curr_reg = classify_addr(item.addr)
+
+            if prev_reg == curr_reg and prev_reg != "INVALID":
+                covered_bins.add(("DOUBLE_WRITE", curr_reg))
+
+        # Save current transaction
+        last_txn = item
 
         new_cov = len(covered_bins)
 
@@ -181,14 +211,13 @@ class CoverageExport(uvm_analysis_export):
 
         gain_label = 1 if coverage_gain > 0 else 0
 
-        # Derive CSV columns directly from the coverage bin
+        # CSV columns
         if item.txn_type == "WRITE":
             _, addr_cat, data_type = bin_key
         else:
             _, addr_cat = bin_key
             data_type = "NA"
 
-                
         self.writer.writerow([
             item.txn_type,
             item.addr,
@@ -201,8 +230,8 @@ class CoverageExport(uvm_analysis_export):
             coverage_gain,
             gain_label,
         ])
+
         self.log_file.flush()
-       
 
     def final_phase(self):
         self.log_file.close()
@@ -210,7 +239,6 @@ class CoverageExport(uvm_analysis_export):
         print(
             f"Coverage: {len(covered_bins)}/{TOTAL_BINS} bins hit"
         )
-
 
 # =========================================================
 # AGENT

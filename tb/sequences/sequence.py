@@ -1,8 +1,7 @@
 import os
 import random
-import pandas as pd
-
 from pyuvm import uvm_sequence
+from tb.hybrid.ml_pool import MLTestPool
 
 from tb.sequences.sequence_item import (
     AXISeqItem,
@@ -13,7 +12,6 @@ from tb.sequences.sequence_item import (
 )
 
 from tb.components.env import (
-   
     get_uncovered_bins,
     coverage_complete,
     TOTAL_BINS,
@@ -71,9 +69,10 @@ class AXISequence(uvm_sequence):
     # ==========================================================
 
     async def run_ml_pool(self):
-        """
-        Replay clustered testcases from clustered_tests.csv.
-        """
+
+        print("AXI Hybrid Sequence Started")
+
+        # Replay clustered testcases from clustered_tests.csv.
 
         base_dir = os.path.dirname(__file__)
 
@@ -82,12 +81,12 @@ class AXISequence(uvm_sequence):
             "../../ml/clustered_tests.csv",
         )
 
-        df = pd.read_csv(csv_path)
+        pool = MLTestPool(csv_path)
 
         remaining_budget = self.total_budget - self.executed
 
         tests_to_run = min(
-            len(df),
+            len(pool),
             remaining_budget,
         )
 
@@ -113,7 +112,7 @@ class AXISequence(uvm_sequence):
             3: "NA",
         }
 
-        for _, row in df.head(tests_to_run).iterrows():
+        for testcase in pool.get_all()[:tests_to_run]:
 
             if self.executed >= self.total_budget:
                 break
@@ -121,9 +120,9 @@ class AXISequence(uvm_sequence):
             if coverage_complete():
                 break
 
-            txn_type = reverse_txn_map[int(row["txn_type"])]
-            addr_cat = reverse_addr_map[int(row["addr_category"])]
-            data_label = reverse_data_map[int(row["data_type"])]
+            txn_type = reverse_txn_map[testcase["txn_type"]]
+            addr_cat = reverse_addr_map[testcase["addr_category"]]
+            data_label = reverse_data_map[testcase["data_type"]]
 
             item = AXISeqItem("item")
 
@@ -161,6 +160,7 @@ class AXISequence(uvm_sequence):
                     )
 
             else:
+
                 item.data_type = "NA"
                 item.wdata = 0
 
@@ -168,20 +168,26 @@ class AXISequence(uvm_sequence):
             await self.finish_item(item)
 
             self.executed += 1
-
         print(
             f"[HYBRID MODE] Replay complete "
             f"({self.executed}/{self.total_budget})"
         )
-    def generate_directed_item(self, target_bin):
 
-        item = AXISeqItem("directed_item")
+    # ==========================================================
+    # Directed testcase generation
+    # ==========================================================
 
-        if target_bin[0] == "READ":
+    def generate_directed_item(self, uncovered_bin):       
+       
+
+        item = AXISeqItem("item")
+
+        # READ bin
+        if uncovered_bin[0] == "READ":
+
+            _, addr_cat = uncovered_bin
 
             item.txn_type = "READ"
-
-            addr_cat = target_bin[1]
 
             if addr_cat == "INVALID":
                 item.addr = random_invalid_addr()
@@ -195,65 +201,122 @@ class AXISequence(uvm_sequence):
 
             return item
 
-        # WRITE
+        # WRITE bin
+        if uncovered_bin[0] == "WRITE":
 
-        item.txn_type = "WRITE"
+            _, addr_cat, data_type = uncovered_bin
 
-        addr_cat = target_bin[1]
+            item.txn_type = "WRITE"
 
-        if addr_cat == "INVALID":
+            if addr_cat == "INVALID":
+                item.addr = random_invalid_addr()
+                item.wdata = random.randint(0, 0xFFFFFFFF)
+                item.data_type = "NA"
 
-            item.addr = random_invalid_addr()
-            item.wdata = random_data_value("LARGE")
-            item.data_type = "NA"
+            else:
+                item.addr = VALID_REGS[
+                    ADDR_CATEGORIES.index(addr_cat)
+                ]
+
+                item.data_type = data_type
+                item.wdata = random_data_value(data_type)
 
             return item
 
-        item.addr = VALID_REGS[
-            ADDR_CATEGORIES.index(addr_cat)
-        ]
-
-        data_type = target_bin[2]
-
-        item.data_type = data_type
-        item.wdata = random_data_value(data_type)
-
-        return item
+        return None
 
     # ==========================================================
-    # Hybrid Gap Filling
+    # Gap filling phase
     # ==========================================================
 
     async def run_gap_fill(self):
-        """
-        Execute deterministic directed transactions for all
-        uncovered coverage bins until coverage is complete or
-        the execution budget is exhausted.
-        """
 
-        print("[HYBRID] Starting deterministic gap filling...")
+        print("[HYBRID MODE] Starting deterministic gap filling")
 
-        while True:
+        while (
+            self.executed < self.total_budget
+            and not coverage_complete()
+        ):
 
-            if coverage_complete():
-                print("[HYBRID] Functional coverage complete.")
-                break
-
-            if self.executed >= self.total_budget:
-                print("[HYBRID] Execution budget exhausted.")
-                break
-
-            uncovered = list(get_uncovered_bins())
+            uncovered = get_uncovered_bins()
 
             if not uncovered:
-                print("[HYBRID] No uncovered bins remain.")
                 break
 
-            target_bin = uncovered[0]
+            target_bin = uncovered.pop()
 
-            print(f"[HYBRID] Filling {target_bin}")
+            # ---------------------------------
+            # RAW bin
+            # ---------------------------------
+            if target_bin[0] == "RAW":
 
+                reg = target_bin[1]
+                addr = VALID_REGS[
+                    ADDR_CATEGORIES.index(reg)
+                ]
+
+                # WRITE transaction
+                w = AXISeqItem("item")
+                w.txn_type = "WRITE"
+                w.addr = addr
+                w.data_type = "SMALL"
+                w.wdata = random_data_value("SMALL")
+
+                await self.start_item(w)
+                await self.finish_item(w)
+                self.executed += 1
+
+                if self.executed >= self.total_budget:
+                    break
+
+                # READ transaction
+                r = AXISeqItem("item")
+                r.txn_type = "READ"
+                r.addr = addr
+                r.wdata = 0
+                r.data_type = "NA"
+
+                await self.start_item(r)
+                await self.finish_item(r)
+                self.executed += 1
+
+                continue
+
+            # ---------------------------------
+            # DOUBLE WRITE bin
+            # ---------------------------------
+            if target_bin[0] == "DOUBLE_WRITE":
+
+                reg = target_bin[1]
+                addr = VALID_REGS[
+                    ADDR_CATEGORIES.index(reg)
+                ]
+
+                for _ in range(2):
+
+                    if self.executed >= self.total_budget:
+                        break
+
+                    w = AXISeqItem("item")
+                    w.txn_type = "WRITE"
+                    w.addr = addr
+                    w.data_type = "SMALL"
+                    w.wdata = random_data_value("SMALL")
+
+                    await self.start_item(w)
+                    await self.finish_item(w)
+
+                    self.executed += 1
+
+                continue
+
+            # ---------------------------------
+            # Existing READ / WRITE bins
+            # ---------------------------------
             item = self.generate_directed_item(target_bin)
+
+            if item is None:
+                continue
 
             await self.start_item(item)
             await self.finish_item(item)
@@ -261,18 +324,42 @@ class AXISequence(uvm_sequence):
             self.executed += 1
 
         print(
-            f"[HYBRID] Gap filling finished "
+            f"[HYBRID MODE] Gap filling complete "
             f"({self.executed}/{self.total_budget})"
         )
 
     # ==========================================================
-    # Entry point
+    # Main sequence body
     # ==========================================================
 
     async def body(self):
 
+        print(">>> BODY ENTERED")
+
+        print("===========================================")
+        print("AXI Hybrid Sequence Started")
+        print("===========================================")
+
         if self.use_hybrid:
+
+            print("[HYBRID MODE] Enabled")
+
             await self.run_ml_pool()
-            await self.run_gap_fill()
+
+            if (
+                self.executed < self.total_budget
+                and not coverage_complete()
+            ):
+                await self.run_gap_fill()
+
         else:
+
+            print("[BASELINE MODE] Enabled")
+
             await self.run_baseline()
+
+        print("===========================================")
+        print("Sequence Finished")
+        print(f"Executed Tests : {self.executed}")
+        print(f"Coverage Goal  : {TOTAL_BINS} bins")
+        print("===========================================")      

@@ -102,8 +102,13 @@ print("Model trained!")
 # STEP 7: Predict coverage gain
 # =====================================================
 
-df["predicted_gain"] = model.predict_proba(X)[:, 1]
 
+if len(model.classes_) == 1:
+    df["predicted_gain"] = 1.0
+else:
+    positive_index = list(model.classes_).index(1)
+    df["predicted_gain"] = model.predict_proba(X)[:, positive_index]
+    
 # =====================================================
 # STEP 8: Sort by priority
 # =====================================================

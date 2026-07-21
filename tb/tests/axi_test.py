@@ -43,7 +43,7 @@ class AXITest(uvm_test):
 
         seq = AXISequence(
             "seq",
-            total_budget=18,
+            total_budget=36,
             use_hybrid=True,
         )
 

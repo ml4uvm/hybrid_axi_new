@@ -20,7 +20,11 @@ class MLTestPool:
 
             for row in reader:
                 testcase = {
-                    # Replace these with YOUR AXI CSV columns
+                    "txn_type": int(row["txn_type"]),
+                    "addr_category": int(row["addr_category"]),
+                    "data_type": int(row["data_type"]),
+                    "predicted_gain": float(row["predicted_gain"]),
+                    "cluster": int(row["cluster"]),
                 }
 
                 testcases.append(testcase)
@@ -32,3 +36,4 @@ class MLTestPool:
 
     def __len__(self):
         return len(self.testcases)
+
